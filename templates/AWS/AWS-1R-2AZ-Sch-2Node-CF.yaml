@@ -1,0 +1,152 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Gala Node Stack
+Parameters:
+  Region:
+    Type: String
+    Description: AWS Region to deploy the resources
+    Default: us-west-2
+  APIKey:
+    Type: String
+    Description: API Key to be stored as Secure Parameter
+  AMIARN:
+    Type: String
+    Description: AMI ARN for the Launch Template
+Resources:
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      InstanceTenancy: default
+      Region: !Ref Region
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Ref 'AWS::StackName'
+  VPCGatewayAttachment:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+  SubnetA:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select 
+        - 0
+        - !GetAZs 
+          Ref: Region
+  SubnetB:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select 
+        - 1
+        - !GetAZs 
+          Ref: Region
+  SecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Allow SSH and custom port 4001 TCP access
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 4001
+          ToPort: 4001
+          CidrIp: 0.0.0.0/0
+  APIKeyParameter:
+    Type: 'AWS::SSM::Parameter'
+    Properties:
+      Name: /APIKey
+      Type: SecureString
+      Value: !Ref APIKey
+  NodeLaunchTemplate:
+    Type: 'AWS::EC2::LaunchTemplate'
+    Properties:
+      LaunchTemplateName: NodeLaunchTemplate
+      LaunchTemplateData:
+        ImageId: !Ref AMIARN
+        InstanceType: t3.medium
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 60
+              DeleteOnTermination: true
+        IamInstanceProfile:
+          Name: ''
+        KeyName: NodeKey
+        NetworkInterfaces:
+          - AssociatePublicIpAddress: true
+          - GroupSet:
+              - !Ref SecurityGroup
+        SecurityGroupIds:
+          - !Ref SecurityGroup
+        UserData:
+          'Fn::Base64': |
+            #cloud-config
+            output: {all: '| tee -a /var/log/cloud-init-output.log'}
+            package_update: true
+            package_upgrade: true
+            packages:
+              - sudo
+        InstanceMarketOptions:
+          MarketType: spot
+          SpotOptions:
+            MaxPrice: 0.0416
+  NodeKey:
+    Type: 'AWS::EC2::KeyPair'
+    Properties:
+      KeyName: NodeKey
+  NodeScalingGroup: 
+      Type: 'AWS::AutoScaling::AutoScalingGroup'
+      Properties:
+        LaunchTemplate:
+          LaunchTemplateName: !Ref NodeLaunchTemplate
+          Version: $Default
+        VPCZoneIdentifier:
+          - !Ref SubnetA
+          - !Ref SubnetB
+        DesiredCapacity: 0
+        MinSize: 0
+        MaxSize: 0
+        Tag:
+          - Key: Name
+            Value: Node Instance
+      ScheduledActions:
+        - Name: StartInstances
+          Recurrence: 0 0 * * *
+          DesiredCapacity: 2
+        - Name: StopInstances
+          Recurrence: 0 8 * * *
+          DesiredCapacity: 0
+Outputs:
+  VPCID:
+    Description: VPC ID
+    Value: !Ref VPC
+  SubnetAID:
+    Description: Public Subnet A ID
+    Value: !Ref SubnetA
+  SubnetBID:
+    Description: Public Subnet B ID
+    Value: !Ref SubnetB
+  NodeLaunchTemplate:
+    Description: Node Launch Template
+    Value: !Ref NodeLaunchTemplate
+  NodeScalingGroup:
+    Description: Node Scaling Group
+    Value: !Ref NodeScalingGroup
+  NodeKey:
+    Description: Node Key Pair
+    Value: !Ref NodeKey
+  SSMSecureParameter:
+    Description: SSM Secure Parameter
+    Value: !Ref SSMSecureParameter
