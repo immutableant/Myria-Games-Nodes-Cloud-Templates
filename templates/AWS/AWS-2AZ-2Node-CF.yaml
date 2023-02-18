@@ -20,11 +20,14 @@ Resources:
       EnableDnsSupport: true
       EnableDnsHostnames: true
       InstanceTenancy: default
+      Tags:
+        - Key: Stack Name
+          Value: !Ref 'AWS::StackName'
   InternetGateway:
     Type: 'AWS::EC2::InternetGateway'
     Properties:
       Tags:
-        - Key: Name
+        - Key: Stack Name
           Value: !Ref 'AWS::StackName'
   VPCGatewayAttachment:
     Type: 'AWS::EC2::VPCGatewayAttachment'
@@ -34,6 +37,9 @@ Resources:
   SubnetA:
     Type: 'AWS::EC2::Subnet'
     Properties:
+      Tags:
+        - Key: Stack Name
+          Value: !Ref 'AWS::StackName'
       VpcId: !Ref VPC
       CidrBlock: 10.0.1.0/24
       AvailabilityZone: !Select 
@@ -42,6 +48,9 @@ Resources:
   SubnetB:
     Type: 'AWS::EC2::Subnet'
     Properties:
+      Tags:
+        - Key: Stack Name
+          Value: !Ref 'AWS::StackName'
       VpcId: !Ref VPC
       CidrBlock: 10.0.2.0/24
       AvailabilityZone: !Select 
@@ -50,6 +59,9 @@ Resources:
   SecurityGroup:
     Type: 'AWS::EC2::SecurityGroup'
     Properties:
+      Tags:
+        - Key: Stack Name
+          Value: !Ref 'AWS::StackName'
       GroupDescription: Allow SSH and custom port 4001 TCP access
       VpcId: !Ref VPC
       SecurityGroupIngress:
@@ -64,6 +76,9 @@ Resources:
   RouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
+      Tags:
+        - Key: Stack Name
+          Value: !Ref 'AWS::StackName'
       VpcId: !Ref VPC
   Route:
     Type: AWS::EC2::Route
@@ -136,6 +151,9 @@ Resources:
     Type: 'AWS::EC2::KeyPair'
     Properties:
       KeyName: NodeKey
+      Tags:
+        - Key: Stack Name
+          Value: !Ref 'AWS::StackName'
   NodeScalingGroup: 
       Type: 'AWS::AutoScaling::AutoScalingGroup'
       DependsOn: NodeLaunchTemplate
@@ -150,9 +168,151 @@ Resources:
         MinSize: '2'
         MaxSize: '2'
         Tags:
+          - Key: Stack Name
+            Value: !Ref 'AWS::StackName'
+            PropagateAtLaunch: true
           - Key: 'Name'
             PropagateAtLaunch: true
             Value: 'Node Instance'
+
+  NodeSpotInstanceSnapshotBackupExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Tags:
+        - Key: Stack Name
+          Value: !Ref 'AWS::StackName'
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: "NodeSpotInstanceSnapshotBackupPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "ec2:DescribeInstances"
+                  - "ec2:DeleteSnapshot"
+                  - "ec2:CreateTags"
+                  - "ec2:CreateSnapshot"
+                  - "ec2:DescribeSnapshots"
+                Resource: "*"
+              - Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"           
+  NodeSpotInstanceSnapshotBackup:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          import json
+          import logging
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          ec2 = boto3.client('ec2')
+
+          def lambda_handler(event, context):
+            logger.info('Received event: %s', json.dumps(event))
+
+            # Extract instance ID from the event
+            instance_id = event['instance-id']
+
+            logger.info('Instance ID: %s', instance_id)
+
+            # Retrieve information about the instance
+            instance_data = ec2.describe_instances(InstanceIds=[instance_id])
+            az = instance_data['Reservations'][0]['Instances'][0]['Placement']['AvailabilityZone']
+            volume_id = instance_data['Reservations'][0]['Instances'][0]['BlockDeviceMappings'][0]['Ebs']['VolumeId']
+            logger.info('Availability Zone: %s, Volume ID: %s', az, volume_id)
+
+            stack_name = os.environ['StackName']
+            logger.info('Stack Name: %s', stack_name)
+
+            # Create the snapshot and tag it with stack name, availability zone, and a name tag
+            snapshot_name = f'{stack_name}-{az}'
+            snapshot_description = f'Snapshot of {volume_id} for {instance_id}'
+            snapshot_tags = [
+                {'Key': 'Name', 'Value': snapshot_name},
+                {'Key': 'StackName', 'Value': stack_name},
+                {'Key': 'AvailabilityZone', 'Value': az}
+            ]
+            snapshot = ec2.create_snapshot(
+                VolumeId=volume_id,
+                Description=snapshot_description,
+                TagSpecifications=[{'ResourceType': 'snapshot', 'Tags': snapshot_tags}]
+            )
+            logger.info('Created snapshot: %s', snapshot['SnapshotId'])
+
+            # Find if there is already a snapshot with the same stack name and availability zone tags
+            existing_snapshots = ec2.describe_snapshots(
+                Filters=[
+                    {'Name': 'tag:StackName', 'Values': [stack_name]},
+                    {'Name': 'tag:AvailabilityZone', 'Values': [az]}
+                ]
+            )['Snapshots']
+            if len(existing_snapshots) > 1:
+                # Sort snapshots by start time (most recent first)
+                sorted_snapshots = sorted(existing_snapshots, key=lambda x: x['StartTime'], reverse=True)
+
+                # Replace the old snapshot with the newly created one
+                ec2.delete_snapshot(SnapshotId=sorted_snapshots[1]['SnapshotId'])
+                logger.info('Deleted old snapshot: %s', sorted_snapshots[1]['SnapshotId'])
+
+            return {
+                'statusCode': 200,
+                'body': json.dumps('Snapshot created successfully')
+            }
+      Handler: index.lambda_handler
+      Role: !GetAtt NodeSpotInstanceSnapshotBackupExecutionRole.Arn
+      Runtime: python3.8
+      Timeout: 60
+      MemorySize: 128
+      Tags:
+        - Key: Stack Name
+          Value: !Ref 'AWS::StackName'
+      Environment:
+        Variables:
+          StackName: !Ref 'AWS::StackName'
+  NodeSpotInstanceTerminationRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: NodeSpotInstanceTerminationRule
+      Description: Trigger NodeSpotInstanceSnapshotBackup when a spot instance is terminated
+      EventPattern:
+        source:
+          - aws.ec2
+        detail-type:
+          - EC2 Spot Instance Interruption Warning
+        detail:
+          instance-action: 
+            - terminate
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt NodeSpotInstanceSnapshotBackup.Arn
+          Id: NodeSpotInstanceSnapshotBackup
+          InputTransformer:
+            InputPathsMap:
+              instance_id: "$.detail.instance-id"
+            InputTemplate: '{"instance-id": <instance_id>}'
+  NodeSpotInstanceTerminationPolicy:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt NodeSpotInstanceSnapshotBackup.Arn
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt NodeSpotInstanceTerminationRule.Arn   
 Outputs:
   VPCID:
     Description: VPC ID
@@ -170,7 +330,7 @@ Outputs:
     Description: Node Scaling Group
     Value: !Ref NodeScalingGroup
   NodeKeyID:
-    Description: Node Key Pair
+    Description: Node Key Name
     Value: !Ref NodeKey
   SecurityGroupID:
     Description: Security group created
