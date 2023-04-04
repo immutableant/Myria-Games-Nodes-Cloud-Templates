@@ -1,13 +1,6 @@
 AWSTemplateFormatVersion: 2010-09-09
-Description: Gala Node Stack
+Description: Myria Node Stack
 Parameters:
-  APIKey:
-    Type: String
-    Description: API Key to be stored as Secure Parameter
-  Workloads:
-    Type: String
-    Description: Workloads to run on Node space separated. Ex. founders player
-    Default: founders player
   LatestAmazonLinuxAMIId:
     Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
     Default: "/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2"
@@ -132,17 +125,7 @@ Resources:
             output: {all: '| tee -a /var/log/cloud-init-output.log'}
             runcmd:
               - yum update -y
-              - yum install docker -y
-              - systemctl enable --now docker
-              - wget --trust-server-names -O ~/Node.tar.gz https://links.gala.com/DownloadLinuxNode
-              - tar xzvf ~/Node.tar.gz -C ~/
-              - sed -i 's/\/usr\/local\/bin\/kubectl/\/usr\/bin\/kubectl/g; s/\/usr\/local\/bin\/gala-node/\/usr\/bin\/gala-node/g' ~/gala-node/install.sh
-              - ~/gala-node/install.sh -y
-              - export HOME=/root
-              - gala-node config api-key ${APIKey}
-              - gala-node config workloads ${Workloads}
-              - gala-node start
-              - bash -c 'printf "#!/bin/bash\necho \"Startup update at \$(date)\"\nyum update -y\ngala-node update -y\necho \"Finished update at \$(date)\"" > /var/lib/cloud/scripts/per-boot/startup.sh && chmod 744 /var/lib/cloud/scripts/per-boot/startup.sh'
+              - sudo wget https://myria-node-headless-software.s3.amazonaws.com/install.sh -O - | sudo sed -e 's/apt install/yum install/g' -e 's/if (( MEM < 4 \* 1024 \* 1024 )) ;then/if (( MEM < 90 \* 4 \* 1024 \* 1024 \/ 100 )) ;then/g' | sudo bash
         InstanceMarketOptions:
           MarketType: spot
           SpotOptions:
@@ -167,7 +150,7 @@ Resources:
     Properties:
       SpotFleetRequestConfigData:
         AllocationStrategy: diversified 
-        IamFleetRole: !GetAtt SpotFleetRole.Arn
+        IamFleetRole: !GetAtt MyriaSpotFleetRole.Arn
         LaunchTemplateConfigs:
           - LaunchTemplateSpecification:
               LaunchTemplateId: !Ref NodeLaunchTemplate
@@ -199,27 +182,11 @@ Resources:
                 Value: 'Node Instance'
     DependsOn:
       - NodeLaunchTemplate
-      - SpotFleetRole
-  StartSpotFleetInstances:
-    Type: 'AWS::Events::Rule'
-    Properties:
-      Name: StartSpotFleetInstances
-      ScheduleExpression: "cron(0 7 * * ? *)"
-      Targets:
-        - Arn: !Sub "arn:aws:autoscaling:${AWS::Region}:${AWS::AccountId}:spot-fleet-request/${NodeSpotFleet}"
-          Id: "StartSpotFleetInstances"
-  StopSpotFleetInstances:
-    Type: 'AWS::Events::Rule'
-    Properties:
-      Name: StopSpotFleetInstances
-      ScheduleExpression: "cron(0 19 * * ? *)"
-      Targets:
-        - Arn: !Sub "arn:aws:autoscaling:${AWS::Region}:${AWS::AccountId}:spot-fleet-request/${NodeSpotFleet}"
-          Id: "StopSpotFleetInstances"
-  SpotFleetRole:
+      - MyriaSpotFleetRole
+  MyriaSpotFleetRole:
     Type: "AWS::IAM::Role"
     Properties:
-      RoleName: "SpotFleetRole"
+      RoleName: "MyriaSpotFleetRole"
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
