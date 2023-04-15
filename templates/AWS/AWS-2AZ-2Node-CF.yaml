@@ -125,7 +125,7 @@ Resources:
             output: {all: '| tee -a /var/log/cloud-init-output.log'}
             runcmd:
               - yum update -y
-              - sudo wget https://myria-node-headless-software.s3.amazonaws.com/install.sh -O - | sudo sed -e 's/apt install/yum install/g' -e 's/if (( MEM < 4 \* 1024 \* 1024 )) ;then/if (( MEM < 90 \* 4 \* 1024 \* 1024 \/ 100 )) ;then/g' | sudo bash
+              - sudo wget https://downloads-builds.myria.com/node/install.sh -O - | sudo sed 's/apt install/yum install/' | sudo bash
         InstanceMarketOptions:
           MarketType: spot
           SpotOptions:
@@ -170,7 +170,7 @@ Resources:
                 AvailabilityZone: !Select 
                   - 1
                   - Fn::GetAZs: !Ref 'AWS::Region'
-        TargetCapacity: 2
+        TargetCapacity: 3
         TerminateInstancesWithExpiration: true
         InstanceInterruptionBehavior: stop
         TagSpecifications:
