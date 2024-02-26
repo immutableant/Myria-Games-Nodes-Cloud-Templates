@@ -1,0 +1,293 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Myria Node Stack
+Parameters:
+  APIKey1:
+    Type: String
+    Description: API Key for the first instance
+  APIKey2:
+    Type: String
+    Description: API Key for the second instance
+  APIKey3:
+    Type: String
+    Description: API Key for the third instance
+  APIKey4:
+    Type: String
+    Description: API Key for the fourth instance
+  APIKey5:
+    Type: String
+    Description: API Key for the fifth instance
+  APIKey6:
+    Type: String
+    Description: API Key for the sixth instance
+  LatestAmazonLinuxAMIId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+    Description: 'Ami to use, DO NOT CHANGE'
+Resources:
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      InstanceTenancy: default
+      Tags:
+        - Key: Stack Name
+          Value: !Ref 'AWS::StackName'
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: Stack Name
+          Value: !Ref 'AWS::StackName'
+  VPCGatewayAttachment:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+  SubnetA:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      Tags:
+        - Key: Stack Name
+          Value: !Ref 'AWS::StackName'
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select 
+        - 0
+        - 'Fn::GetAZs': !Ref 'AWS::Region'
+  SubnetB:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      Tags:
+        - Key: Stack Name
+          Value: !Ref 'AWS::StackName'
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select 
+        - 1
+        - 'Fn::GetAZs': !Ref 'AWS::Region'
+  SecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      Tags:
+        - Key: Stack Name
+          Value: !Ref 'AWS::StackName'
+      GroupDescription: Allow SSH and custom port 4001 TCP access
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 4001
+          ToPort: 4001
+          CidrIp: 0.0.0.0/0
+  RouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      Tags:
+        - Key: Stack Name
+          Value: !Ref 'AWS::StackName'
+      VpcId: !Ref VPC
+  Route:
+    Type: 'AWS::EC2::Route'
+    DependsOn:
+      - InternetGateway
+      - RouteTable
+      - VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  RouteSubnetA:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    DependsOn:
+      - RouteTable
+      - SubnetA
+      - Route
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref SubnetA
+  RouteSubnetB:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    DependsOn:
+      - RouteTable
+      - SubnetB
+      - Route
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref SubnetB
+  NodeLaunchTemplate:
+    Type: 'AWS::EC2::LaunchTemplate'
+    Properties:
+      LaunchTemplateName: NodeLaunchTemplate
+      LaunchTemplateData:
+        ImageId: !Sub '${LatestAmazonLinuxAMIId}'
+        InstanceType: t3.medium
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 60
+              DeleteOnTermination: true
+        KeyName: NodeKey
+        InstanceMarketOptions:
+          MarketType: spot
+          SpotOptions:
+            SpotInstanceType: persistent
+            InstanceInterruptionBehavior: stop
+            MaxPrice: '0.03'
+      TagSpecifications:
+        - ResourceType: launch-template
+          Tags:
+            - Key: Stack Name
+              Value: !Ref 'AWS::StackName'
+            - Key: Name
+              Value: Node Instance
+  NodeKey:
+    Type: 'AWS::EC2::KeyPair'
+    Properties:
+      KeyName: NodeKey
+      Tags:
+        - Key: Stack Name
+          Value: !Ref 'AWS::StackName'
+  Instance1:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref NodeLaunchTemplate
+        Version: !GetAtt NodeLaunchTemplate.LatestVersionNumber
+      UserData:
+        'Fn::Base64': !Sub |
+          #cloud-config
+          output: {all: '| tee -a /var/log/cloud-init-output.log'}
+          runcmd:
+            - yum update -y
+            - sudo wget https://downloads-builds.myria.com/node/install.sh -O - | sudo sed 's/apt install/yum install/' | sudo bash
+            - echo ${APIKey1} | myria-node --start
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetA
+          GroupSet:
+            - !Ref SecurityGroup
+          AssociatePublicIpAddress: true
+  Instance2:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref NodeLaunchTemplate
+        Version: !GetAtt NodeLaunchTemplate.LatestVersionNumber
+      UserData:
+        'Fn::Base64': !Sub |
+          #cloud-config
+          output: {all: '| tee -a /var/log/cloud-init-output.log'}
+          runcmd:
+            - yum update -y
+            - sudo wget https://downloads-builds.myria.com/node/install.sh -O - | sudo sed 's/apt install/yum install/' | sudo bash
+            - echo ${APIKey2} | myria-node --start
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetB
+          GroupSet:
+            - !Ref SecurityGroup
+          AssociatePublicIpAddress: true
+  Instance3:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref NodeLaunchTemplate
+        Version: !GetAtt NodeLaunchTemplate.LatestVersionNumber
+      UserData:
+        'Fn::Base64': !Sub |
+          #cloud-config
+          output: {all: '| tee -a /var/log/cloud-init-output.log'}
+          runcmd:
+            - yum update -y
+            - sudo wget https://downloads-builds.myria.com/node/install.sh -O - | sudo sed 's/apt install/yum install/' | sudo bash
+            - echo ${APIKey3} | myria-node --start
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetA
+          GroupSet:
+            - !Ref SecurityGroup
+          AssociatePublicIpAddress: true
+  Instance4:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref NodeLaunchTemplate
+        Version: !GetAtt NodeLaunchTemplate.LatestVersionNumber
+      UserData:
+        'Fn::Base64': !Sub |
+          #cloud-config
+          output: {all: '| tee -a /var/log/cloud-init-output.log'}
+          runcmd:
+            - yum update -y
+            - sudo wget https://downloads-builds.myria.com/node/install.sh -O - | sudo sed 's/apt install/yum install/' | sudo bash
+            - echo ${APIKey4} | myria-node --start
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetB
+          GroupSet:
+            - !Ref SecurityGroup
+          AssociatePublicIpAddress: true
+  Instance5:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref NodeLaunchTemplate
+        Version: !GetAtt NodeLaunchTemplate.LatestVersionNumber
+      UserData:
+        'Fn::Base64': !Sub |
+          #cloud-config
+          output: {all: '| tee -a /var/log/cloud-init-output.log'}
+          runcmd:
+            - yum update -y
+            - sudo wget https://downloads-builds.myria.com/node/install.sh -O - | sudo sed 's/apt install/yum install/' | sudo bash
+            - echo ${APIKey5} | myria-node --start
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetA
+          GroupSet:
+            - !Ref SecurityGroup
+          AssociatePublicIpAddress: true
+  Instance6:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref NodeLaunchTemplate
+        Version: !GetAtt NodeLaunchTemplate.LatestVersionNumber
+      UserData:
+        'Fn::Base64': !Sub |
+          #cloud-config
+          output: {all: '| tee -a /var/log/cloud-init-output.log'}
+          runcmd:
+            - yum update -y
+            - sudo wget https://downloads-builds.myria.com/node/install.sh -O - | sudo sed 's/apt install/yum install/' | sudo bash
+            - echo ${APIKey6} | myria-node --start
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetB
+          GroupSet:
+            - !Ref SecurityGroup
+          AssociatePublicIpAddress: true
+Outputs:
+  VPCID:
+    Description: VPC ID
+    Value: !Ref VPC
+  SubnetAID:
+    Description: Public Subnet A ID
+    Value: !Ref SubnetA
+  SubnetBID:
+    Description: Public Subnet B ID
+    Value: !Ref SubnetB
+  NodeLaunchTemplateID:
+    Description: Node Launch Template
+    Value: !Ref NodeLaunchTemplate
+  NodeKeyID:
+    Description: Node Key Name
+    Value: !Ref NodeKey
+  SecurityGroupID:
+    Description: Security group created
+    Value: !Ref SecurityGroup
